@@ -1,0 +1,123 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>드럼 악보 만들기</title>
+<link rel="manifest" href="manifest.webmanifest">
+<meta name="theme-color" content="#1e293b">
+<link rel="apple-touch-icon" href="icon-192.png">
+<style>
+  body { font-family: system-ui, "Noto Sans KR", sans-serif; max-width: 720px; margin: 0 auto; padding: 16px; line-height: 1.5; }
+  label { display: block; margin: 8px 0; }
+  input[type=text], input[type=number], select { width: 100%; box-sizing: border-box; padding: 8px; font-size: 16px; }
+  .row { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+  button, a.btn { display: inline-block; padding: 12px 16px; font-size: 16px; margin: 8px 8px 8px 0; border: 1px solid #888; border-radius: 8px; background: #f4f4f4; color: #000; text-decoration: none; }
+  progress { width: 100%; }
+  pre { background: #f4f4f4; padding: 8px; max-height: 200px; overflow: auto; white-space: pre-wrap; font-size: 12px; }
+  img { max-width: 100%; border: 1px solid #ccc; margin: 4px 0; }
+</style>
+<!-- PDF 생성 라이브러리 (인터넷 필요. 나중에 파일로 내려받아 앱과 함께 두면 오프라인 가능) -->
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+<script src="cropmerge.js"></script>
+</head>
+<body>
+<h2>드럼 악보 만들기</h2>
+
+<label>악보 사진 선택 (여러 장, <span id="cnt">0장 선택됨</span>)
+  <input type="file" id="files" accept="image/*" multiple>
+</label>
+<label>제목 (첫 장 위쪽)
+  <input type="text" id="title" placeholder="예: Song Title">
+</label>
+<div class="row">
+  <label>좌우 여백(mm)<input type="number" id="mx" value="10" step="0.5" min="0"></label>
+  <label>상하 여백(mm)<input type="number" id="my" value="10" step="0.5" min="0"></label>
+  <label>이미지 간 최소 간격(mm)<input type="number" id="gmin" value="1" step="0.5" min="0"></label>
+  <label>이미지 간 최대 간격(mm)<input type="number" id="gmax" value="3.5" step="0.5" min="0"></label>
+</div>
+<label>페이지 해상도(dpi)
+  <select id="dpi">
+    <option value="150" selected>150 (폰 화면 캡처 FHD+ 권장)</option>
+    <option value="200">200</option>
+    <option value="300">300 (고해상도 원본·인쇄용)</option>
+  </select>
+</label>
+<label><input type="checkbox" id="debug"> 연보라 띠 검출 결과 보기 (디버그)</label>
+
+<button id="run">악보 만들기</button>
+<progress id="bar" value="0" max="1"></progress>
+<pre id="log"></pre>
+<div id="result"></div>
+
+<script>
+const $ = (id) => document.getElementById(id);
+if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catch(() => {});
+$('files').onchange = () => { $('cnt').textContent = $('files').files.length + '장 선택됨'; };
+// 마지막에 쓴 설정을 폰에 기억
+const SAVED = ['title', 'mx', 'my', 'gmin', 'gmax', 'dpi'];
+try { const s = JSON.parse(localStorage.getItem('drumscore-settings') || '{}'); SAVED.forEach((k) => { if (s[k] !== undefined) $(k).value = s[k]; }); } catch (e) {}
+const saveSettings = () => { try { const s = {}; SAVED.forEach((k) => { s[k] = $(k).value; }); localStorage.setItem('drumscore-settings', JSON.stringify(s)); } catch (e) {} };
+const log = (m) => { const el = $('log'); el.textContent += m + '\n'; el.scrollTop = el.scrollHeight; };
+
+$('run').onclick = async () => {
+  const files = $('files').files;
+  if (!files.length) { alert('악보 사진을 먼저 선택하세요.'); return; }
+  saveSettings();
+  $('log').textContent = '';
+  $('result').innerHTML = '';
+  $('run').disabled = true;
+  try {
+    const res = await CropMerge.processAll(
+      files,
+      { debug: $('debug').checked },
+      { title: $('title').value, dpi: +$('dpi').value,
+        marginXmm: +$('mx').value, marginYmm: +$('my').value,
+        minGapMm: +$('gmin').value, maxGapMm: +$('gmax').value },
+      { onLog: log, onProgress: (p) => { $('bar').max = p.total; $('bar').value = p.done; } }
+    );
+    show(res);
+  } catch (e) {
+    log('[오류] ' + e.message);
+  }
+  $('run').disabled = false;
+};
+
+function link(blob, name, text) {
+  const a = document.createElement('a');
+  a.className = 'btn';
+  a.href = URL.createObjectURL(blob);
+  a.download = name;
+  a.textContent = text;
+  return a;
+}
+
+function show(res) {
+  const box = $('result');
+  if (res.pdf) {
+    box.append(link(res.pdf, 'score.pdf', 'PDF 저장'));
+    const file = new File([res.pdf], 'score.pdf', { type: 'application/pdf' });
+    if (navigator.canShare && navigator.canShare({ files: [file] })) {
+      const b = document.createElement('button');
+      b.textContent = '공유 / 다른 앱에 저장';
+      b.onclick = () => navigator.share({ files: [file], title: 'score' }).catch(() => {});
+      box.append(b);
+    }
+  }
+  res.pages.forEach((p, i) => {
+    const name = 'page_' + String(i + 1).padStart(2, '0') + '.jpg';
+    const img = document.createElement('img');
+    img.src = URL.createObjectURL(p.blob);
+    box.append(document.createElement('br'), img, document.createElement('br'), link(p.blob, name, name + ' 저장'));
+  });
+  res.debug.forEach((d) => {
+    const img = document.createElement('img');
+    img.src = URL.createObjectURL(d.blob);
+    const cap = document.createElement('div');
+    cap.textContent = '띠 검출: ' + d.name + ' (흰색 = 제거된 영역)';
+    box.append(cap, img);
+  });
+}
+</script>
+</body>
+</html>
