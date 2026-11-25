@@ -1,5 +1,5 @@
 // 오프라인용 캐시. 앱을 고쳐서 다시 올릴 때는 아래 버전 숫자를 올리세요 (v1 -> v2 ...)
-const V = 'drumscore-v1';
+const V = 'drumscore-v2';
 const CORE = ['./', 'index.html', 'cropmerge.js', 'manifest.webmanifest', 'icon-192.png', 'icon-512.png'];
 self.addEventListener('install', (e) => {
   e.waitUntil(caches.open(V).then((c) => c.addAll(CORE)).then(() => self.skipWaiting()));

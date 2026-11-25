@@ -12,6 +12,8 @@
     paperFrac: 0.7,        // 한 줄에서 '종이색 픽셀'이 이 비율 이상이면 악보 줄로 판단 (0~1)
     paperLuma: 200,        // 종이색 판정: 밝기가 이 값 이상이고
     paperSat: 0.12,        // 채도가 이 값 이하 (흰색~크림색)
+    lineGap: 5,            // 오선처럼 얇은 어두운 줄(두께 이 px 이하)이 종이 사이에 끼면 종이로 보고 판정 (줄 사이 흰 칸이 좁은 악보 대응)
+    edgeFrac: 0.8,         // 악보 위·아래 경계를 정할 때의 종이 비율 기준 (재생 막대 같은 얇은 흰 띠가 악보에 붙는 것 방지)
     smooth: 15,            // 밝기 평활화 폭
     mergeGap: 20,          // 이 높이(px) 이하의 어두운 틈은 같은 악보로 합침
     minHeight: 100,        // 이보다 낮은 영역은 악보로 보지 않음
@@ -86,6 +88,7 @@
       mergeGap: px(s.mergeGap), minHeight: px(s.minHeight, 1),
       ignoreTop: px(s.ignoreTop), ignoreBottom: px(s.ignoreBottom),
       edgeTrim: s.edgeTrim > 0 ? px(s.edgeTrim, 1) : 0,
+      lineGap: s.lineGap > 0 ? px(s.lineGap, 1) : 0,
       minArea: Math.max(1, Math.round(s.minArea * sc * sc)),
       bridge: s.bridge > 0 ? px(s.bridge, 1) : 0,
       grow: s.grow > 0 ? px(s.grow, 1) : 0,
@@ -108,19 +111,43 @@
   }
 
   // 줄마다 '종이색(밝고 채도 낮은) 픽셀'의 비율(0~1). 사진·영상 화면은 이 비율이 낮다
+  // 종이색 판정 마스크: 밝고 채도 낮은 픽셀을 1로 표시.
+  // 오선처럼 얇은 어두운 줄(두께 lineGap px 이하)이 종이 사이에 끼면 종이로 보고 메운다.
+  // (줄 사이 흰 칸이 좁은 악보는 오선 때문에 흰 비율이 떨어져 악보가 쪼개지는 문제를 막음)
+  function paperMaskOf(data, w, h, s) {
+    const n = w * h;
+    const m = new Uint8Array(n);
+    for (let p = 0, i = 0; p < n; p++, i += 4) {
+      const r = data[i];
+      const g = data[i + 1];
+      const b = data[i + 2];
+      const mx = Math.max(r, g, b);
+      const mn = Math.min(r, g, b);
+      if (0.299 * r + 0.587 * g + 0.114 * b >= s.paperLuma && mx - mn <= s.paperSat * mx) m[p] = 1;
+    }
+    const gap = Math.round(s.lineGap || 0);
+    if (gap > 0) {
+      for (let x = 0; x < w; x++) {
+        let y = 0;
+        while (y < h) {
+          if (m[y * w + x]) { y++; continue; }
+          const a = y;
+          while (y < h && !m[y * w + x]) y++;
+          if (a > 0 && y < h && y - a <= gap) for (let k = a; k < y; k++) m[k * w + x] = 1;
+        }
+      }
+    }
+    return m;
+  }
+
+  // 줄별 종이 비율 (0~1)
   function paperFractionOf(data, w, h, s) {
+    const m = paperMaskOf(data, w, h, s);
     const f = new Float32Array(h);
     for (let y = 0; y < h; y++) {
       let cnt = 0;
-      let i = y * w * 4;
-      for (let x = 0; x < w; x++, i += 4) {
-        const r = data[i];
-        const g = data[i + 1];
-        const b = data[i + 2];
-        const mx = Math.max(r, g, b);
-        const mn = Math.min(r, g, b);
-        if (0.299 * r + 0.587 * g + 0.114 * b >= s.paperLuma && mx - mn <= s.paperSat * mx) cnt++;
-      }
+      const row = y * w;
+      for (let x = 0; x < w; x++) cnt += m[row + x];
       f[y] = cnt / w;
     }
     return f;
@@ -167,10 +194,12 @@
     let bottom = best[1];
     if (bottom - top < s.minHeight) return null;
     // 평활화로 생긴 경계 오차를 원본 줄 밝기로 보정 (바깥으로 넓힌 뒤 안쪽으로 다듬음)
-    while (top > s.ignoreTop && rowMeans[top - 1] >= s.paperFrac) top--;
-    while (bottom < h - s.ignoreBottom && rowMeans[bottom] >= s.paperFrac) bottom++;
-    while (top < bottom && rowMeans[top] < s.paperFrac) top++;
-    while (bottom > top && rowMeans[bottom - 1] < s.paperFrac) bottom--;
+    // 경계는 더 엄격한 기준(edgeFrac)으로 다듬어서, 재생 막대처럼 얇은 흰 띠가 악보에 붙지 않게 함
+    const edge = s.edgeFrac !== undefined ? s.edgeFrac : s.paperFrac;
+    while (top > s.ignoreTop && rowMeans[top - 1] >= edge) top--;
+    while (bottom < h - s.ignoreBottom && rowMeans[bottom] >= edge) bottom++;
+    while (top < bottom && rowMeans[top] < edge) top++;
+    while (bottom > top && rowMeans[bottom - 1] < edge) bottom--;
     // 이미지 끝이 아니라 '잘라낸' 경계라면 안쪽으로 조금 더 다듬음
     if (top > 0) top += s.edgeTrim;
     if (bottom < h) bottom -= s.edgeTrim;
@@ -632,7 +661,7 @@
   global.CropMerge = {
     DEFAULT_CROP, DEFAULT_COMPOSE,
     cropImage, composePages, buildPdf, processAll,
-    _internal: { findScoreRows, paperFractionOf, lavenderMask, detectBand, whitenData, restoreUnderBand, unblendBand, fillMask, brightenData, rowMeansOf,
+    _internal: { findScoreRows, paperFractionOf, paperMaskOf, lavenderMask, detectBand, whitenData, restoreUnderBand, unblendBand, fillMask, brightenData, rowMeansOf,
                  makeComposeSettings, splitPages, removeSmallBlobs, dilate, scaleSettings },
   };
 })(typeof window !== 'undefined' ? window : globalThis);
